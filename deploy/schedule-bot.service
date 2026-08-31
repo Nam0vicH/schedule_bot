@@ -1,0 +1,21 @@
+[Unit]
+Description=MIIGAiK Schedule Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=schedulebot
+Group=schedulebot
+WorkingDirectory=/opt/schedule_bot
+ExecStart=/opt/schedule_bot/.venv/bin/python -m schedule_bot
+Restart=always
+RestartSec=10
+EnvironmentFile=/opt/schedule_bot/.env
+
+# Безопасность
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/schedule_bot
+
+[Install]
+WantedBy=multi-user.target
