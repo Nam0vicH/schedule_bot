@@ -1,4 +1,4 @@
-"""Telegram-бот расписания МИИГАиК на aiogram 3.x с поддержкой групп и эфемерных сообщений."""
+"""Telegram-бот расписания МИИГАиК на aiogram 3.x (строго эфемерный режим в группах)."""
 
 from __future__ import annotations
 
@@ -12,6 +12,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatType, ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
     CallbackQuery,
     EphemeralMessageParameters,
     InlineKeyboardMarkup,
@@ -63,27 +66,31 @@ async def _send_response(
     user_id: int | None = None,
     chat_type: str = ChatType.PRIVATE,
 ) -> None:
-    """Отправить сообщение (в группах пробуем эфемерно, при любой ошибке — штатно)."""
+    """Отправить сообщение: в группах СТРОГО эфемерно, в ЛС — обычно."""
     if _is_group_chat(chat_type) and user_id:
-        try:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=reply_markup,
-                ephemeral_message_parameters=EphemeralMessageParameters(
-                    receiver_user_id=user_id,
-                ),
-            )
-            return
-        except Exception as exc:
-            logger.debug("Эфемерная отправка не удалась (%s), выполняем обычную отправку", exc)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=reply_markup,
+            ephemeral_message_parameters=EphemeralMessageParameters(
+                receiver_user_id=user_id,
+            ),
+        )
+    else:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=reply_markup,
+        )
 
-    # Обычная отправка (в ЛС или при fallback)
-    await bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=reply_markup,
-    )
+
+async def _clean_group_command(message: Message) -> None:
+    """Удалить сообщение с вызовом команды в группе, чтобы в чате не оставалось следов."""
+    if _is_group_chat(message.chat.type):
+        try:
+            await message.delete()
+        except Exception:
+            pass
 
 
 # ── Обработчики команд ─────────────────────────────────────
@@ -98,6 +105,7 @@ async def cmd_start(message: Message, bot: Bot) -> None:
         "/week — расписание на текущую неделю"
     )
 
+    await _clean_group_command(message)
     await _send_response(
         bot=bot,
         chat_id=message.chat.id,
@@ -119,6 +127,7 @@ async def cmd_today(message: Message, bot: Bot) -> None:
         text = "⚠️ Не удалось получить актуальное расписание. Попробуйте позже."
         keyboard = None
 
+    await _clean_group_command(message)
     await _send_response(
         bot=bot,
         chat_id=message.chat.id,
@@ -141,6 +150,7 @@ async def cmd_tomorrow(message: Message, bot: Bot) -> None:
         text = "⚠️ Не удалось получить актуальное расписание. Попробуйте позже."
         keyboard = None
 
+    await _clean_group_command(message)
     await _send_response(
         bot=bot,
         chat_id=message.chat.id,
@@ -164,6 +174,7 @@ async def cmd_week(message: Message, bot: Bot) -> None:
         text = "⚠️ Не удалось получить актуальное расписание. Попробуйте позже."
         keyboard = None
 
+    await _clean_group_command(message)
     await _send_response(
         bot=bot,
         chat_id=message.chat.id,
@@ -172,6 +183,46 @@ async def cmd_week(message: Message, bot: Bot) -> None:
         user_id=message.from_user.id if message.from_user else None,
         chat_type=message.chat.type,
     )
+
+
+async def _handle_callback_update(
+    query: CallbackQuery,
+    text: str,
+    keyboard: InlineKeyboardMarkup,
+) -> None:
+    """Обновить сообщение по кнопке (в группах — по спецификации EphemeralMessageParameters, в ЛС — через edit_text)."""
+    if not query.message:
+        return
+
+    if _is_group_chat(query.message.chat.type):
+        try:
+            # Если сообщение уже эфемерное — редактируем через edit_ephemeral_message_text
+            if isinstance(query.message, Message) and query.message.ephemeral_message_id:
+                await query.bot.edit_ephemeral_message_text(
+                    chat_id=query.message.chat.id,
+                    receiver_user_id=query.from_user.id,
+                    ephemeral_message_id=query.message.ephemeral_message_id,
+                    text=text,
+                    reply_markup=keyboard,
+                )
+            else:
+                # Если кнопка нажата в обычном сообщении — показываем эфемерку взамен сообщения
+                await query.bot.send_message(
+                    chat_id=query.message.chat.id,
+                    text=text,
+                    reply_markup=keyboard,
+                    ephemeral_message_parameters=EphemeralMessageParameters(
+                        receiver_user_id=query.from_user.id,
+                        callback_query_id=query.id,
+                        replace_callback_query_message=True,
+                    ),
+                )
+        except Exception:
+            logger.exception("Ошибка при эфемерном обновлении callback")
+    else:
+        await query.answer()
+        if isinstance(query.message, Message):
+            await query.message.edit_text(text=text, reply_markup=keyboard)
 
 
 # ── Обработчики callback-запросов ──────────────────────────
@@ -205,31 +256,9 @@ async def on_day_callback(query: CallbackQuery) -> None:
         day = await cache.get_or_fetch(target)
         text = format_day(day, label=label)
         keyboard = get_day_keyboard(target)
-
-        if _is_group_chat(query.message.chat.type):
-            try:
-                await query.bot.send_message(
-                    chat_id=query.message.chat.id,
-                    text=text,
-                    reply_markup=keyboard,
-                    ephemeral_message_parameters=EphemeralMessageParameters(
-                        receiver_user_id=query.from_user.id,
-                        callback_query_id=query.id,
-                    ),
-                )
-                return
-            except Exception:
-                pass
-
-        await query.answer()
-        if isinstance(query.message, Message):
-            await query.message.edit_text(text=text, reply_markup=keyboard)
+        await _handle_callback_update(query, text, keyboard)
     except Exception:
         logger.exception("Ошибка при обработке day callback: %s", date_str)
-        try:
-            await query.answer()
-        except Exception:
-            pass
 
 
 @router.callback_query(F.data.startswith("week:"))
@@ -252,43 +281,13 @@ async def on_week_callback(query: CallbackQuery) -> None:
         days = await cache.get_or_fetch_week(monday, sunday)
         text = format_week(days)
         keyboard = get_week_keyboard(monday)
-
-        if _is_group_chat(query.message.chat.type):
-            try:
-                await query.bot.send_message(
-                    chat_id=query.message.chat.id,
-                    text=text,
-                    reply_markup=keyboard,
-                    ephemeral_message_parameters=EphemeralMessageParameters(
-                        receiver_user_id=query.from_user.id,
-                        callback_query_id=query.id,
-                    ),
-                )
-                return
-            except Exception:
-                pass
-
-        await query.answer()
-        if isinstance(query.message, Message):
-            await query.message.edit_text(text=text, reply_markup=keyboard)
+        await _handle_callback_update(query, text, keyboard)
     except Exception:
         logger.exception("Ошибка при обработке week callback: %s", date_str)
-        try:
-            await query.answer()
-        except Exception:
-            pass
 
 
-from aiogram.types import (
-    BotCommand,
-    BotCommandScopeAllGroupChats,
-    BotCommandScopeAllPrivateChats,
-    CallbackQuery,
-    EphemeralMessageParameters,
-    InlineKeyboardMarkup,
-    Message,
-)
 
+# ── Регистрация команд ──────────────────────────────────────
 
 async def _setup_commands(bot: Bot) -> None:
     """Зарегистрировать команды в Telegram с флагом is_ephemeral для групп."""
@@ -342,4 +341,3 @@ async def start_bot() -> None:
 def run_bot() -> None:
     """Точка входа для запуска бота."""
     asyncio.run(start_bot())
-
