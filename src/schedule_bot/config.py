@@ -21,14 +21,18 @@ TIMEZONE = "Europe/Moscow"
 
 # ── Telegram ────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-ALLOWED_TELEGRAM_USER_ID: int = 0
 
-_raw_user_id = os.getenv("ALLOWED_TELEGRAM_USER_ID", "")
-if _raw_user_id.isdigit():
-    ALLOWED_TELEGRAM_USER_ID = int(_raw_user_id)
+# Список администраторов бота (опционально, через запятую в .env)
+# Обратная совместимость: если задан ALLOWED_TELEGRAM_USER_ID — используем его
+ADMIN_USER_IDS: list[int] = []
+_raw_admin_ids = os.getenv("ADMIN_USER_IDS", "") or os.getenv("ALLOWED_TELEGRAM_USER_ID", "")
+for _part in _raw_admin_ids.replace(",", " ").split():
+    if _part.strip().isdigit():
+        ADMIN_USER_IDS.append(int(_part.strip()))
 
 # ── Уведомления ────────────────────────────────────────────
 NOTIFICATION_TIME: str = os.getenv("NOTIFICATION_TIME", "19:00")
+AUTO_DIFF_NOTIFY: bool = os.getenv("AUTO_DIFF_NOTIFY", "true").lower() in ("true", "1", "yes")
 
 # ── Кэш ────────────────────────────────────────────────────
 CACHE_DB_PATH = _project_root / "schedule_cache.db"
@@ -40,9 +44,8 @@ def validate() -> None:
     errors: list[str] = []
     if not TELEGRAM_BOT_TOKEN:
         errors.append("TELEGRAM_BOT_TOKEN не задан в .env")
-    if not ALLOWED_TELEGRAM_USER_ID:
-        errors.append("ALLOWED_TELEGRAM_USER_ID не задан в .env")
     if errors:
         for e in errors:
             print(f"❌ {e}", file=sys.stderr)
         sys.exit(1)
+

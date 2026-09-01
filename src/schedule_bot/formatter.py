@@ -1,8 +1,10 @@
-"""Форматирование расписания для Telegram-сообщений."""
+"""Форматирование расписания для Telegram-сообщений (aiogram 3.x)."""
 
 from __future__ import annotations
 
 import datetime
+
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from schedule_bot.models import DaySchedule, Lesson
 
@@ -35,6 +37,12 @@ def _format_date(date: datetime.date) -> str:
     return date.strftime("%d.%m.%Y")
 
 
+def _get_group_name() -> str:
+    """Вернуть имя группы из конфигурации."""
+    from schedule_bot.config import GROUP_NAME
+    return GROUP_NAME
+
+
 def _lesson_block(lesson: Lesson) -> str:
     """Форматирование одного занятия."""
     num_emoji = _NUM_EMOJI.get(lesson.number, f"{lesson.number}️⃣")
@@ -58,7 +66,7 @@ def format_day(day: DaySchedule, label: str | None = None) -> str:
     header_parts = ["📅"]
     if label:
         header_parts.append(f"<b>{label}</b> —")
-    header_parts.append(_format_date(day.date))
+    header_parts.append(f"<b>{day.weekday}</b>, {_format_date(day.date)}")
     header = " ".join(header_parts)
 
     parts = [
@@ -68,7 +76,7 @@ def format_day(day: DaySchedule, label: str | None = None) -> str:
 
     if not day.has_lessons:
         parts.append("")
-        parts.append("Занятий нет.")
+        parts.append("Занятий нет. Отдыхайте! 😊")
         return "\n".join(parts)
 
     for lesson in day.lessons:
@@ -78,73 +86,66 @@ def format_day(day: DaySchedule, label: str | None = None) -> str:
     return "\n".join(parts)
 
 
-def format_day_compact(day: DaySchedule) -> str:
-    """Компактный формат дня для недельного расписания."""
+def _format_day_expandable(day: DaySchedule) -> str:
+    """Компактный формат дня для недельного расписания с раскрывающимся блоком."""
     header = f"📅 <b>{day.weekday}</b>, {_format_date(day.date)}"
 
     if not day.has_lessons:
-        return f"{header}\nЗанятий нет."
+        return f"{header} — <i>выходной</i>"
 
-    lines = [header]
+    count = len(day.lessons)
+    summary = f"{header} — {count} пар(ы)"
+
+    lesson_lines = []
     for lesson in day.lessons:
-        lines.append(
-            f"  {_NUM_EMOJI.get(lesson.number, '·')} "
-            f"{lesson.time_start}–{lesson.time_end} — "
-            f"{lesson.subject} — {lesson.classroom}"
+        num_emoji = _NUM_EMOJI.get(lesson.number, "·")
+        lesson_lines.append(
+            f"  {num_emoji} {lesson.time_start}–{lesson.time_end} — "
+            f"<b>{lesson.subject}</b>"
         )
-    return "\n".join(lines)
+        details = []
+        if lesson.lesson_type:
+            details.append(f"<i>{lesson.lesson_type}</i>")
+        if lesson.classroom:
+            details.append(f"📍 {lesson.classroom}")
+        if lesson.teacher:
+            details.append(f"👨‍🏫 {lesson.teacher}")
+        if details:
+            lesson_lines.append(f"      {' · '.join(details)}")
+
+    inner = "\n".join(lesson_lines)
+    return f"{summary}\n<blockquote expandable>{inner}</blockquote>"
 
 
 def format_week(days: list[DaySchedule]) -> str:
-    """Форматирование расписания на неделю."""
-    from schedule_bot.config import GROUP_NAME
-
+    """Форматирование расписания на неделю с раскрывающимися блоками."""
     if not days:
         return "📅 На этой неделе занятий нет."
 
-    # Определяем даты начала и конца
     dates = sorted(d.date for d in days)
     start = _format_date(dates[0])
     end = _format_date(dates[-1])
 
     parts = [
-        f"📅 <b>Неделя {start} — {end}</b>",
-        f"👥 {GROUP_NAME}",
+        f"🗓 <b>Неделя {start} — {end}</b>",
+        f"👥 {_get_group_name()}",
         "",
     ]
 
     total_lessons = 0
     for day in sorted(days, key=lambda d: d.date):
-        parts.append(format_day_compact(day))
-        parts.append("")
+        parts.append(_format_day_expandable(day))
         total_lessons += len(day.lessons)
 
-    parts.append(f"Всего пар: {total_lessons}")
+    parts.append("")
+    parts.append(f"📊 Всего пар за неделю: <b>{total_lessons}</b>")
     return "\n".join(parts)
-
-
-def format_no_lessons(date: datetime.date, label: str | None = None) -> str:
-    """Сообщение об отсутствии занятий."""
-    parts = ["📅"]
-    if label:
-        parts.append(f"{label} —")
-    parts.append(_format_date(date))
-    header = " ".join(parts)
-    return f"{header}\n\nЗанятий нет."
-
-
-def format_next_lesson(lesson: Lesson, day: DaySchedule) -> str:
-    """Форматирование ближайшего следующего занятия."""
-    return (
-        f"⏭ <b>Ближайшее занятие</b>\n"
-        f"📅 {day.weekday}, {_format_date(day.date)}\n\n"
-        f"{_lesson_block(lesson)}"
-    )
 
 
 def format_notification(day: DaySchedule) -> str:
     """Форматирование автоматического уведомления (расписание на завтра)."""
     parts = [f"📚 <b>Расписание на завтра</b>"]
+    parts.append(f"📅 {day.weekday}, {_format_date(day.date)}")
     parts.append(f"👥 {_get_group_name()}")
 
     if not day.has_lessons:
@@ -161,7 +162,41 @@ def format_notification(day: DaySchedule) -> str:
     return "\n".join(parts)
 
 
-def _get_group_name() -> str:
-    """Вернуть имя группы из конфигурации."""
-    from schedule_bot.config import GROUP_NAME
-    return GROUP_NAME
+# ── Inline-клавиатуры ──────────────────────────────────────
+
+def get_day_keyboard(target_date: datetime.date) -> InlineKeyboardMarkup:
+    """Создать инлайн-клавиатуру для навигации по дням."""
+    prev_day = target_date - datetime.timedelta(days=1)
+    next_day = target_date + datetime.timedelta(days=1)
+
+    mon = target_date - datetime.timedelta(days=target_date.weekday())
+
+    buttons = [
+        [
+            InlineKeyboardButton(text="◀️ День", callback_data=f"day:{prev_day.isoformat()}"),
+            InlineKeyboardButton(text="📅 Сегодня", callback_data="day:today"),
+            InlineKeyboardButton(text="День ▶️", callback_data=f"day:{next_day.isoformat()}"),
+        ],
+        [
+            InlineKeyboardButton(text="🗓 Вся неделя", callback_data=f"week:{mon.isoformat()}"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_week_keyboard(monday_date: datetime.date) -> InlineKeyboardMarkup:
+    """Создать инлайн-клавиатуру для навигации по неделям."""
+    prev_mon = monday_date - datetime.timedelta(days=7)
+    next_mon = monday_date + datetime.timedelta(days=7)
+
+    buttons = [
+        [
+            InlineKeyboardButton(text="◀️ Пред. неделя", callback_data=f"week:{prev_mon.isoformat()}"),
+            InlineKeyboardButton(text="🗓 Тек. неделя", callback_data="week:current"),
+            InlineKeyboardButton(text="След. неделя ▶️", callback_data=f"week:{next_mon.isoformat()}"),
+        ],
+        [
+            InlineKeyboardButton(text="📅 Сегодня", callback_data="day:today"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
