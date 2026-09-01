@@ -98,26 +98,11 @@ async def _send_response(
 @router.message(Command("help"))
 async def cmd_start(message: Message, bot: Bot) -> None:
     """Обработка /start и /help."""
-    is_group = _is_group_chat(message.chat.type)
-    if is_group:
-        text = (
-            "🎓 <b>Бот расписания МИИГАиК</b>\n"
-            f"👥 Группа: {config.GROUP_NAME}\n\n"
-            "Доступные команды:\n"
-            "/today — расписание на сегодня\n"
-            "/tomorrow — расписание на завтра\n"
-            "/week — расписание на текущую неделю"
-        )
-    else:
-        text = (
-            "🎓 <b>Бот расписания МИИГАиК</b>\n"
-            f"👥 Группа: {config.GROUP_NAME}\n\n"
-            "/today — расписание на сегодня\n"
-            "/tomorrow — расписание на завтра\n"
-            "/week — расписание на текущую неделю\n\n"
-            "💡 Бот также работает в групповых чатах!\n"
-            "Добавьте его в чат группы одногруппников."
-        )
+    text = (
+        "/today — расписание на сегодня\n"
+        "/tomorrow — расписание на завтра\n"
+        "/week — расписание на текущую неделю"
+    )
 
     await _send_response(
         bot=bot,
@@ -127,6 +112,7 @@ async def cmd_start(message: Message, bot: Bot) -> None:
         chat_type=message.chat.type,
     )
     logger.info("Пользователь %s выполнил /start в чате %s", message.from_user, message.chat.id)
+
 
 
 @router.message(Command("today"))

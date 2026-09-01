@@ -69,10 +69,7 @@ def format_day(day: DaySchedule, label: str | None = None) -> str:
     header_parts.append(f"<b>{day.weekday}</b>, {_format_date(day.date)}")
     header = " ".join(header_parts)
 
-    parts = [
-        header,
-        f"👥 {_get_group_name()}",
-    ]
+    parts = [header]
 
     if not day.has_lessons:
         parts.append("")
@@ -128,9 +125,9 @@ def format_week(days: list[DaySchedule]) -> str:
 
     parts = [
         f"🗓 <b>Неделя {start} — {end}</b>",
-        f"👥 {_get_group_name()}",
         "",
     ]
+
 
     total_lessons = 0
     for day in sorted(days, key=lambda d: d.date):
