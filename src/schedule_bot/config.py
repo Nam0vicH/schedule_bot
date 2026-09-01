@@ -30,13 +30,10 @@ for _part in _raw_admin_ids.replace(",", " ").split():
     if _part.strip().isdigit():
         ADMIN_USER_IDS.append(int(_part.strip()))
 
-# ── Уведомления ────────────────────────────────────────────
-NOTIFICATION_TIME: str = os.getenv("NOTIFICATION_TIME", "19:00")
-AUTO_DIFF_NOTIFY: bool = os.getenv("AUTO_DIFF_NOTIFY", "true").lower() in ("true", "1", "yes")
-
 # ── Кэш ────────────────────────────────────────────────────
 CACHE_DB_PATH = _project_root / "schedule_cache.db"
 CACHE_TTL_HOURS = 2  # время жизни кэша в часах
+
 
 # ── Валидация ───────────────────────────────────────────────
 def validate() -> None:

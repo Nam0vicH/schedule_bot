@@ -142,26 +142,6 @@ def format_week(days: list[DaySchedule]) -> str:
     return "\n".join(parts)
 
 
-def format_notification(day: DaySchedule) -> str:
-    """Форматирование автоматического уведомления (расписание на завтра)."""
-    parts = [f"📚 <b>Расписание на завтра</b>"]
-    parts.append(f"📅 {day.weekday}, {_format_date(day.date)}")
-    parts.append(f"👥 {_get_group_name()}")
-
-    if not day.has_lessons:
-        parts.append("")
-        parts.append("Занятий нет. Отдыхайте! 😊")
-        return "\n".join(parts)
-
-    parts.append(f"\n{len(day.lessons)} пар(ы):")
-
-    for lesson in day.lessons:
-        parts.append("")
-        parts.append(_lesson_block(lesson))
-
-    return "\n".join(parts)
-
-
 # ── Inline-клавиатуры ──────────────────────────────────────
 
 def get_day_keyboard(target_date: datetime.date) -> InlineKeyboardMarkup:

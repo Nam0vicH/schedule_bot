@@ -1,4 +1,4 @@
-"""SQLite-кэш расписания и управление подписками чатов."""
+"""SQLite-кэш расписания."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_connection(db_path: Path | None = None) -> sqlite3.Connection:
-    """Создать или открыть соединение с БД кэша и подписок."""
+    """Создать или открыть соединение с БД кэша."""
     path = db_path or config.CACHE_DB_PATH
     conn = sqlite3.connect(str(path))
     conn.execute("""
@@ -26,36 +26,8 @@ def _get_connection(db_path: Path | None = None) -> sqlite3.Connection:
             fetched_at TEXT NOT NULL
         )
     """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS chat_subscriptions (
-            chat_id        INTEGER PRIMARY KEY,
-            chat_type      TEXT NOT NULL DEFAULT 'private',
-            title          TEXT NOT NULL DEFAULT '',
-            notify_daily   INTEGER NOT NULL DEFAULT 1,
-            notify_diff    INTEGER NOT NULL DEFAULT 1,
-            created_at     TEXT NOT NULL
-        )
-    """)
     conn.commit()
     return conn
-
-
-# ── Кэш расписания ────────────────────────────────────────
-
-def get_cached_raw(target: datetime.date) -> DaySchedule | None:
-    """Получить расписание из кэша без проверки TTL (для diff-сравнения)."""
-    conn = _get_connection()
-    try:
-        row = conn.execute(
-            "SELECT data FROM schedule_cache WHERE date = ?",
-            (target.isoformat(),),
-        ).fetchone()
-        if not row:
-            return None
-        data = json.loads(row[0])
-        return DaySchedule.from_dict(data)
-    finally:
-        conn.close()
 
 
 def get_cached(target: datetime.date) -> DaySchedule | None:
@@ -156,7 +128,6 @@ async def get_or_fetch_week(
     logger.info("Загружаю неделю %s — %s с сайта…", date_start, date_end)
     days = await parser.fetch_week_schedule(date_start, date_end)
 
-    # Сохраняем все дни (включая пустые) для полноценного кэширования
     fetched_dates = {d.date for d in days}
     weekdays = [
         "Понедельник", "Вторник", "Среда",
@@ -175,88 +146,3 @@ async def get_or_fetch_week(
 
     save_week_cache(days)
     return days
-
-
-# ── Управление подписками чатов ────────────────────────────
-
-def subscribe_chat(
-    chat_id: int,
-    chat_type: str = "private",
-    title: str = "",
-    notify_daily: bool = True,
-    notify_diff: bool = True,
-) -> None:
-    """Зарегистрировать или обновить подписку чата."""
-    conn = _get_connection()
-    try:
-        now = datetime.datetime.now().isoformat()
-        conn.execute(
-            """
-            INSERT INTO chat_subscriptions (chat_id, chat_type, title, notify_daily, notify_diff, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-                chat_type = excluded.chat_type,
-                title = CASE WHEN excluded.title != '' THEN excluded.title ELSE chat_subscriptions.title END,
-                notify_daily = excluded.notify_daily,
-                notify_diff = excluded.notify_diff
-            """,
-            (chat_id, chat_type, title, int(notify_daily), int(notify_diff), now),
-        )
-        conn.commit()
-        logger.info("Чат %s (%s) подписан на уведомления", chat_id, title or chat_type)
-    finally:
-        conn.close()
-
-
-def unsubscribe_chat(chat_id: int) -> bool:
-    """Удалить чат из подписок. Возвращает True, если чат был найден и удалён."""
-    conn = _get_connection()
-    try:
-        cur = conn.execute(
-            "DELETE FROM chat_subscriptions WHERE chat_id = ?",
-            (chat_id,),
-        )
-        conn.commit()
-        deleted = cur.rowcount > 0
-        if deleted:
-            logger.info("Чат %s отписан от всех уведомлений", chat_id)
-        return deleted
-    finally:
-        conn.close()
-
-
-def is_subscribed(chat_id: int) -> bool:
-    """Проверить, подписан ли чат."""
-    conn = _get_connection()
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM chat_subscriptions WHERE chat_id = ?",
-            (chat_id,),
-        ).fetchone()
-        return row is not None
-    finally:
-        conn.close()
-
-
-def get_daily_subscribers() -> list[int]:
-    """Получить список chat_id с включенными ежедневными уведомлениями."""
-    conn = _get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT chat_id FROM chat_subscriptions WHERE notify_daily = 1"
-        ).fetchall()
-        return [r[0] for r in rows]
-    finally:
-        conn.close()
-
-
-def get_diff_subscribers() -> list[int]:
-    """Получить список chat_id с включенными оповещениями об изменениях."""
-    conn = _get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT chat_id FROM chat_subscriptions WHERE notify_diff = 1"
-        ).fetchall()
-        return [r[0] for r in rows]
-    finally:
-        conn.close()
