@@ -59,37 +59,19 @@ async def _send_response(
     user_id: int | None = None,
     chat_type: str = ChatType.PRIVATE,
 ) -> None:
-    """Отправить сообщение (с ephemeral_message_parameters в групповых чатах)."""
+    """Отправить сообщение (с EphemeralMessageParameters в групповых чатах)."""
+    ephemeral_params: EphemeralMessageParameters | None = None
     if _is_group_chat(chat_type) and user_id:
-        # Пробуем отправить как эфемерное сообщение
-        try:
-            payload: dict = {
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "ephemeral_message_parameters": {
-                    "receiver_user_id": user_id,
-                },
-            }
-            if reply_markup:
-                payload["reply_markup"] = reply_markup.model_dump(exclude_none=True)
+        ephemeral_params = EphemeralMessageParameters(
+            receiver_user_id=user_id,
+        )
 
-            url = f"https://api.telegram.org/bot{bot.token}/sendMessage"
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(url, json=payload)
-                data = resp.json()
-                if data.get("ok"):
-                    return
-                logger.debug("Эфемерная отправка не удалась: %s, переход на fallback", data)
-        except Exception:
-            logger.debug("Исключение при эфемерной отправке, переход на fallback", exc_info=True)
-
-    # Обычная отправка (в ЛС или при fallback)
     await bot.send_message(
         chat_id=chat_id,
         text=text,
         reply_markup=reply_markup,
     )
+
 
 
 # ── Обработчики команд ─────────────────────────────────────
@@ -187,7 +169,6 @@ async def cmd_week(message: Message, bot: Bot) -> None:
 @router.callback_query(F.data.startswith("day:"))
 async def on_day_callback(query: CallbackQuery) -> None:
     """Обработка переключения дня через inline-кнопку."""
-    await query.answer()
     if not query.data or not query.message:
         return
 
@@ -214,8 +195,21 @@ async def on_day_callback(query: CallbackQuery) -> None:
         day = await cache.get_or_fetch(target)
         text = format_day(day, label=label)
         keyboard = get_day_keyboard(target)
-        if isinstance(query.message, Message):
-            await query.message.edit_text(text=text, reply_markup=keyboard)
+
+        if _is_group_chat(query.message.chat.type):
+            await query.bot.send_message(
+                chat_id=query.message.chat.id,
+                text=text,
+                reply_markup=keyboard,
+                ephemeral_message_parameters=EphemeralMessageParameters(
+                    receiver_user_id=query.from_user.id,
+                    callback_query_id=query.id,
+                ),
+            )
+        else:
+            await query.answer()
+            if isinstance(query.message, Message):
+                await query.message.edit_text(text=text, reply_markup=keyboard)
     except Exception:
         logger.exception("Ошибка при обработке day callback: %s", date_str)
 
@@ -223,7 +217,6 @@ async def on_day_callback(query: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("week:"))
 async def on_week_callback(query: CallbackQuery) -> None:
     """Обработка переключения недели через inline-кнопку."""
-    await query.answer()
     if not query.data or not query.message:
         return
 
@@ -241,10 +234,24 @@ async def on_week_callback(query: CallbackQuery) -> None:
         days = await cache.get_or_fetch_week(monday, sunday)
         text = format_week(days)
         keyboard = get_week_keyboard(monday)
-        if isinstance(query.message, Message):
-            await query.message.edit_text(text=text, reply_markup=keyboard)
+
+        if _is_group_chat(query.message.chat.type):
+            await query.bot.send_message(
+                chat_id=query.message.chat.id,
+                text=text,
+                reply_markup=keyboard,
+                ephemeral_message_parameters=EphemeralMessageParameters(
+                    receiver_user_id=query.from_user.id,
+                    callback_query_id=query.id,
+                ),
+            )
+        else:
+            await query.answer()
+            if isinstance(query.message, Message):
+                await query.message.edit_text(text=text, reply_markup=keyboard)
     except Exception:
         logger.exception("Ошибка при обработке week callback: %s", date_str)
+
 
 
 # ── Запуск бота ─────────────────────────────────────────────
