@@ -7,12 +7,16 @@ import datetime
 import logging
 import zoneinfo
 
-import httpx
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatType, ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    EphemeralMessageParameters,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from schedule_bot import cache, config, parser
 from schedule_bot.formatter import (
@@ -59,19 +63,27 @@ async def _send_response(
     user_id: int | None = None,
     chat_type: str = ChatType.PRIVATE,
 ) -> None:
-    """Отправить сообщение (с EphemeralMessageParameters в групповых чатах)."""
-    ephemeral_params: EphemeralMessageParameters | None = None
+    """Отправить сообщение (в группах пробуем эфемерно, при любой ошибке — штатно)."""
     if _is_group_chat(chat_type) and user_id:
-        ephemeral_params = EphemeralMessageParameters(
-            receiver_user_id=user_id,
-        )
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=reply_markup,
+                ephemeral_message_parameters=EphemeralMessageParameters(
+                    receiver_user_id=user_id,
+                ),
+            )
+            return
+        except Exception as exc:
+            logger.debug("Эфемерная отправка не удалась (%s), выполняем обычную отправку", exc)
 
+    # Обычная отправка (в ЛС или при fallback)
     await bot.send_message(
         chat_id=chat_id,
         text=text,
         reply_markup=reply_markup,
     )
-
 
 
 # ── Обработчики команд ─────────────────────────────────────
@@ -93,8 +105,6 @@ async def cmd_start(message: Message, bot: Bot) -> None:
         user_id=message.from_user.id if message.from_user else None,
         chat_type=message.chat.type,
     )
-    logger.info("Пользователь %s выполнил /start в чате %s", message.from_user, message.chat.id)
-
 
 
 @router.message(Command("today"))
@@ -197,21 +207,29 @@ async def on_day_callback(query: CallbackQuery) -> None:
         keyboard = get_day_keyboard(target)
 
         if _is_group_chat(query.message.chat.type):
-            await query.bot.send_message(
-                chat_id=query.message.chat.id,
-                text=text,
-                reply_markup=keyboard,
-                ephemeral_message_parameters=EphemeralMessageParameters(
-                    receiver_user_id=query.from_user.id,
-                    callback_query_id=query.id,
-                ),
-            )
-        else:
-            await query.answer()
-            if isinstance(query.message, Message):
-                await query.message.edit_text(text=text, reply_markup=keyboard)
+            try:
+                await query.bot.send_message(
+                    chat_id=query.message.chat.id,
+                    text=text,
+                    reply_markup=keyboard,
+                    ephemeral_message_parameters=EphemeralMessageParameters(
+                        receiver_user_id=query.from_user.id,
+                        callback_query_id=query.id,
+                    ),
+                )
+                return
+            except Exception:
+                pass
+
+        await query.answer()
+        if isinstance(query.message, Message):
+            await query.message.edit_text(text=text, reply_markup=keyboard)
     except Exception:
         logger.exception("Ошибка при обработке day callback: %s", date_str)
+        try:
+            await query.answer()
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data.startswith("week:"))
@@ -236,22 +254,29 @@ async def on_week_callback(query: CallbackQuery) -> None:
         keyboard = get_week_keyboard(monday)
 
         if _is_group_chat(query.message.chat.type):
-            await query.bot.send_message(
-                chat_id=query.message.chat.id,
-                text=text,
-                reply_markup=keyboard,
-                ephemeral_message_parameters=EphemeralMessageParameters(
-                    receiver_user_id=query.from_user.id,
-                    callback_query_id=query.id,
-                ),
-            )
-        else:
-            await query.answer()
-            if isinstance(query.message, Message):
-                await query.message.edit_text(text=text, reply_markup=keyboard)
+            try:
+                await query.bot.send_message(
+                    chat_id=query.message.chat.id,
+                    text=text,
+                    reply_markup=keyboard,
+                    ephemeral_message_parameters=EphemeralMessageParameters(
+                        receiver_user_id=query.from_user.id,
+                        callback_query_id=query.id,
+                    ),
+                )
+                return
+            except Exception:
+                pass
+
+        await query.answer()
+        if isinstance(query.message, Message):
+            await query.message.edit_text(text=text, reply_markup=keyboard)
     except Exception:
         logger.exception("Ошибка при обработке week callback: %s", date_str)
-
+        try:
+            await query.answer()
+        except Exception:
+            pass
 
 
 # ── Запуск бота ─────────────────────────────────────────────
