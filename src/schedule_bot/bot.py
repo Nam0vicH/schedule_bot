@@ -9,7 +9,9 @@ import zoneinfo
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ChatType, ParseMode
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     BotCommand,
@@ -66,22 +68,31 @@ async def _send_response(
     user_id: int | None = None,
     chat_type: str = ChatType.PRIVATE,
 ) -> None:
-    """Отправить сообщение: в группах СТРОГО эфемерно, в ЛС — обычно."""
-    if _is_group_chat(chat_type) and user_id:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=reply_markup,
-            ephemeral_message_parameters=EphemeralMessageParameters(
-                receiver_user_id=user_id,
-            ),
-        )
-    else:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=reply_markup,
-        )
+    """Отправить сообщение: в группах СТРОГО эфемерно, в ЛС — обычно (с защитой от сбоев сети)."""
+    for attempt in range(2):
+        try:
+            if _is_group_chat(chat_type) and user_id:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                    ephemeral_message_parameters=EphemeralMessageParameters(
+                        receiver_user_id=user_id,
+                    ),
+                )
+            else:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                )
+            return
+        except TelegramNetworkError as exc:
+            logger.warning("Сетевая ошибка Telegram (%s), повторная попытка #%d...", exc, attempt + 1)
+            await asyncio.sleep(0.5)
+        except Exception as exc:
+            logger.exception("Ошибка при отправке сообщения: %s", exc)
+            break
 
 
 async def _clean_group_command(message: Message) -> None:
@@ -185,6 +196,8 @@ async def cmd_week(message: Message, bot: Bot) -> None:
     )
 
 
+# ── Обработчики callback-запросов ──────────────────────────
+
 async def _handle_callback_update(
     query: CallbackQuery,
     text: str,
@@ -194,38 +207,42 @@ async def _handle_callback_update(
     if not query.message:
         return
 
-    if _is_group_chat(query.message.chat.type):
+    for attempt in range(2):
         try:
-            # Если сообщение уже эфемерное — редактируем через edit_ephemeral_message_text
-            if isinstance(query.message, Message) and query.message.ephemeral_message_id:
-                await query.bot.edit_ephemeral_message_text(
-                    chat_id=query.message.chat.id,
-                    receiver_user_id=query.from_user.id,
-                    ephemeral_message_id=query.message.ephemeral_message_id,
-                    text=text,
-                    reply_markup=keyboard,
-                )
-            else:
-                # Если кнопка нажата в обычном сообщении — показываем эфемерку взамен сообщения
-                await query.bot.send_message(
-                    chat_id=query.message.chat.id,
-                    text=text,
-                    reply_markup=keyboard,
-                    ephemeral_message_parameters=EphemeralMessageParameters(
+            if _is_group_chat(query.message.chat.type):
+                # Если сообщение уже эфемерное — редактируем через edit_ephemeral_message_text
+                if isinstance(query.message, Message) and query.message.ephemeral_message_id:
+                    await query.bot.edit_ephemeral_message_text(
+                        chat_id=query.message.chat.id,
                         receiver_user_id=query.from_user.id,
-                        callback_query_id=query.id,
-                        replace_callback_query_message=True,
-                    ),
-                )
+                        ephemeral_message_id=query.message.ephemeral_message_id,
+                        text=text,
+                        reply_markup=keyboard,
+                    )
+                else:
+                    # Если кнопка нажата в обычном сообщении — показываем эфемерку взамен сообщения
+                    await query.bot.send_message(
+                        chat_id=query.message.chat.id,
+                        text=text,
+                        reply_markup=keyboard,
+                        ephemeral_message_parameters=EphemeralMessageParameters(
+                            receiver_user_id=query.from_user.id,
+                            callback_query_id=query.id,
+                            replace_callback_query_message=True,
+                        ),
+                    )
+            else:
+                await query.answer()
+                if isinstance(query.message, Message):
+                    await query.message.edit_text(text=text, reply_markup=keyboard)
+            return
+        except TelegramNetworkError as exc:
+            logger.warning("Сетевая ошибка при callback (%s), повторная попытка #%d...", exc, attempt + 1)
+            await asyncio.sleep(0.5)
         except Exception:
             logger.exception("Ошибка при эфемерном обновлении callback")
-    else:
-        await query.answer()
-        if isinstance(query.message, Message):
-            await query.message.edit_text(text=text, reply_markup=keyboard)
+            break
 
-
-# ── Обработчики callback-запросов ──────────────────────────
 
 @router.callback_query(F.data.startswith("day:"))
 async def on_day_callback(query: CallbackQuery) -> None:
@@ -286,7 +303,6 @@ async def on_week_callback(query: CallbackQuery) -> None:
         logger.exception("Ошибка при обработке week callback: %s", date_str)
 
 
-
 # ── Регистрация команд ──────────────────────────────────────
 
 async def _setup_commands(bot: Bot) -> None:
@@ -317,8 +333,10 @@ async def start_bot() -> None:
     """Запустить бота на aiogram 3."""
     config.validate()
 
+    session = AiohttpSession(timeout=30.0)
     bot = Bot(
         token=config.TELEGRAM_BOT_TOKEN,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher()
