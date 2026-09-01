@@ -279,6 +279,39 @@ async def on_week_callback(query: CallbackQuery) -> None:
             pass
 
 
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    CallbackQuery,
+    EphemeralMessageParameters,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+
+async def _setup_commands(bot: Bot) -> None:
+    """Зарегистрировать команды в Telegram с флагом is_ephemeral для групп."""
+    group_commands = [
+        BotCommand(command="today", description="Расписание на сегодня", is_ephemeral=True),
+        BotCommand(command="tomorrow", description="Расписание на завтра", is_ephemeral=True),
+        BotCommand(command="week", description="Расписание на неделю", is_ephemeral=True),
+        BotCommand(command="help", description="Список команд", is_ephemeral=True),
+    ]
+    private_commands = [
+        BotCommand(command="today", description="Расписание на сегодня"),
+        BotCommand(command="tomorrow", description="Расписание на завтра"),
+        BotCommand(command="week", description="Расписание на неделю"),
+        BotCommand(command="help", description="Список команд"),
+    ]
+    try:
+        await bot.set_my_commands(commands=group_commands, scope=BotCommandScopeAllGroupChats())
+        await bot.set_my_commands(commands=private_commands, scope=BotCommandScopeAllPrivateChats())
+        logger.info("Команды бота зарегистрированы (is_ephemeral=True для групп)")
+    except Exception as exc:
+        logger.warning("Не удалось зарегистрировать команды: %s", exc)
+
+
 # ── Запуск бота ─────────────────────────────────────────────
 
 async def start_bot() -> None:
@@ -291,6 +324,9 @@ async def start_bot() -> None:
     )
     dp = Dispatcher()
     dp.include_router(router)
+
+    # Настройка команд с эфемерным режимом для групп
+    await _setup_commands(bot)
 
     logger.info(
         "Бот aiogram 3 запущен (polling). Группа: %s",
@@ -306,3 +342,4 @@ async def start_bot() -> None:
 def run_bot() -> None:
     """Точка входа для запуска бота."""
     asyncio.run(start_bot())
+
