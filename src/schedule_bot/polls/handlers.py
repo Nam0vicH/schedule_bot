@@ -27,7 +27,7 @@ from aiogram.types import (
 
 from schedule_bot import config
 from schedule_bot.polls import db, service, ui
-from schedule_bot.polls.models import STATUS_ACTIVE, PollView
+from schedule_bot.polls.models import CARD_TEXT, STATUS_ACTIVE, PollView
 from schedule_bot.polls.states import CreatePoll, ManagePoll
 
 logger = logging.getLogger(__name__)
@@ -247,13 +247,6 @@ def _compose_expires_at(days: int | None) -> str | None:
     return moment.isoformat(timespec="seconds")
 
 
-def _option_number(view: PollView, option_id: int) -> int:
-    for index, item in enumerate(view.options, 1):
-        if item.option.id == option_id:
-            return index
-    return 0
-
-
 def _chat_title_for(poll) -> str:
     if not poll.chat_id:
         return "не опубликован"
@@ -387,15 +380,26 @@ async def on_noop(query: CallbackQuery) -> None:
 
 # ── Бронирование ───────────────────────────────────────────
 
+_BOOK_NOTIFICATIONS = {
+    "booked": "✅ Тема успешно забронирована!",
+    "changed": "✅ Выбор изменён!",
+    "same": "ℹ️ Вы уже выбрали этот вариант.",
+    "full": "⚠️ Этот вариант уже занят.",
+    "conflict": "⚠️ Вариант только что занял другой участник.",
+    "inactive": "🔒 Опрос завершён.",
+    "expired": "⌛ Срок действия опроса истёк.",
+    "change_forbidden": "⛔ Организатор запретил изменять выбор.",
+    "not_found": "⚠️ Опрос не найден.",
+    "option_not_found": "⚠️ Этот вариант больше не существует.",
+}
+
+
 async def _book_and_confirm(
     query: CallbackQuery,
     bot: Bot,
     poll_id: int,
     option_id: int,
-    *,
-    from_picker: bool,
 ) -> None:
-    view_before = db.get_view(poll_id)
     result = db.book(
         poll_id,
         option_id,
@@ -403,165 +407,157 @@ async def _book_and_confirm(
         _display_name(query.from_user),
         query.from_user.username,
     )
+    await query.answer(
+        _BOOK_NOTIFICATIONS.get(result.code, "⚠️ Не удалось сохранить выбор.")
+    )
 
-    if result.code in ("booked", "changed"):
-        service.schedule_refresh(bot, poll_id)
-        view_after = db.get_view(poll_id)
-        option_title = result.option.title if result.option else "выбранный вариант"
-        number = _option_number(view_after, option_id) if view_after else 0
-
-        if result.code == "changed" and view_before:
-            previous = view_before.find_user_booking(query.from_user.id)
-            old_text = ""
-            if previous:
-                old_number = _option_number(view_before, previous[0].option.id)
-                old_text = f"\nБыло: №{old_number} — {ui.esc(previous[0].option.title)}"
-            text = (
-                "✅ <b>Выбор изменён!</b>\n\n"
-                f"Стало: №{number} — {ui.esc(option_title)}"
-                f"{old_text}\n\n"
-                "Старый вариант освобождён для других участников."
-            )
-        else:
-            text = (
-                "✅ <b>Ваш выбор успешно сохранён!</b>\n\n"
-                f"Ваша тема: №{number} — {ui.esc(option_title)}.\n\n"
-                "Теперь этот вариант закреплён за вами.\n"
-                "Другие участники увидят, что тема занята."
-            )
-
-        if from_picker:
-            await _replace_panel(query, bot, text)
-        else:
-            await _personal(query, bot, text)
-        return
-
-    if result.code in ("full", "conflict", "inactive", "expired", "option_not_found"):
+    if result.code in (
+        "booked",
+        "changed",
+        "full",
+        "conflict",
+        "inactive",
+        "expired",
+        "option_not_found",
+    ):
         service.schedule_refresh(bot, poll_id)
 
-    messages = {
-        "same": "ℹ️ Этот вариант уже выбран за вами.",
-        "full": "⚠️ Вариант уже занят. Карточка обновлена — выберите другой.",
-        "conflict": "⚠️ Вариант только что занял другой участник. Попробуйте другой.",
-        "inactive": "🔒 Опрос закрыт. Новые выборы недоступны.",
-        "expired": "⌛ Срок действия опроса истёк.",
-        "change_forbidden": "⛔ Организатор запретил изменять выбор.",
-        "not_found": "⚠️ Опрос больше не существует.",
-        "option_not_found": "⚠️ Этот вариант больше не существует. Карточка обновлена.",
-    }
-    await _personal(query, bot, messages.get(result.code, "⚠️ Не удалось сохранить выбор."))
+
+def _parse_pick(data: str | None) -> tuple[int, int] | None:
+    parts = (data or "").split(":")
+    try:
+        return int(parts[2]), int(parts[3])
+    except (IndexError, ValueError):
+        return None
 
 
 @router.callback_query(F.data.startswith("poll:pick:"))
 async def on_pick(query: CallbackQuery, bot: Bot) -> None:
-    await query.answer()
-    parts = (query.data or "").split(":")
-    try:
-        poll_id, option_id = int(parts[2]), int(parts[3])
-    except (IndexError, ValueError):
+    parsed = _parse_pick(query.data)
+    if parsed is None:
+        await query.answer()
         return
-    await _book_and_confirm(query, bot, poll_id, option_id, from_picker=False)
+    await _book_and_confirm(query, bot, *parsed)
 
 
 @router.callback_query(F.data.startswith("poll:picksel:"))
 async def on_pick_select(query: CallbackQuery, bot: Bot) -> None:
-    await query.answer()
-    parts = (query.data or "").split(":")
-    try:
-        poll_id, option_id = int(parts[2]), int(parts[3])
-    except (IndexError, ValueError):
+    """Совместимость со старыми кнопками режима изменения выбора."""
+    parsed = _parse_pick(query.data)
+    if parsed is None:
+        await query.answer()
         return
-    await _book_and_confirm(query, bot, poll_id, option_id, from_picker=True)
+    await _book_and_confirm(query, bot, *parsed)
 
 
 @router.callback_query(F.data.startswith("poll:change:"))
 async def on_change(query: CallbackQuery, bot: Bot) -> None:
-    await query.answer()
     try:
         poll_id = int((query.data or "").split(":")[2])
     except (IndexError, ValueError):
+        await query.answer()
         return
 
     view = db.get_view(poll_id)
     if view is None:
-        await _personal(query, bot, "⚠️ Опрос больше не существует.")
+        await query.answer("⚠️ Опрос не найден.")
         return
     if view.poll.status != STATUS_ACTIVE:
-        await _personal(query, bot, "🔒 Опрос закрыт. Изменение выбора недоступно.")
-        service.schedule_refresh(bot, poll_id)
+        await query.answer("🔒 Опрос завершён.")
         return
     if not view.poll.allow_change:
-        await _personal(query, bot, "⛔ Организатор запретил изменять выбор.")
+        await query.answer("⛔ Организатор запретил изменять выбор.")
+        return
+    if view.find_user_booking(query.from_user.id) is None:
+        await query.answer("ℹ️ У вас пока нет выбранной темы.")
         return
 
-    current = view.find_user_booking(query.from_user.id)
-    if current is None:
-        await _personal(
-            query,
-            bot,
-            "ℹ️ У вас пока нет выбранного варианта. Нажмите на свободный вариант "
-            "в карточке опроса.",
-        )
-        return
-
-    number = _option_number(view, current[0].option.id)
-    text = (
-        "🔄 <b>Изменение выбора</b>\n\n"
-        f"Текущий вариант: №{number} — {ui.esc(current[0].option.title)}.\n\n"
-        "Выберите новый свободный вариант. Старый освободится автоматически."
+    await query.answer(
+        "🔄 Для изменения выбора нажмите на другой свободный вариант."
     )
-    await _personal(query, bot, text, ui.picker_keyboard(view))
 
 
 @router.callback_query(F.data.startswith("poll:cancel:"))
 async def on_cancel_booking(query: CallbackQuery, bot: Bot) -> None:
-    await query.answer()
     try:
         poll_id = int((query.data or "").split(":")[2])
     except (IndexError, ValueError):
+        await query.answer()
         return
 
     result = db.cancel_booking(poll_id, query.from_user.id)
-    if result.code == "cancelled":
-        service.schedule_refresh(bot, poll_id)
-        title = result.option.title if result.option else "ваш вариант"
-        await _personal(
-            query,
-            bot,
-            "✅ <b>Ваш выбор отменён.</b>\n\n"
-            f"Вариант «{ui.esc(title)}» снова доступен другим участникам.",
-        )
-        return
-
-    if result.code in ("inactive", "expired"):
-        service.schedule_refresh(bot, poll_id)
-
     messages = {
-        "no_booking": "ℹ️ У вас нет бронирования в этом опросе.",
-        "inactive": "🔒 Опрос закрыт. Отмена выбора недоступна.",
+        "cancelled": "✅ Ваш выбор отменён.",
+        "no_booking": "ℹ️ У вас пока нет выбранной темы.",
+        "inactive": "🔒 Опрос завершён.",
         "expired": "⌛ Срок действия опроса истёк.",
         "cancel_forbidden": "⛔ Организатор запретил отмену выбора.",
-        "not_found": "⚠️ Опрос больше не существует.",
+        "not_found": "⚠️ Опрос не найден.",
     }
-    await _personal(query, bot, messages.get(result.code, "⚠️ Не удалось отменить выбор."))
+    await query.answer(messages.get(result.code, "⚠️ Не удалось отменить выбор."))
+
+    if result.code in ("cancelled", "inactive", "expired"):
+        service.schedule_refresh(bot, poll_id)
 
 
 @router.callback_query(F.data.startswith("poll:refresh:"))
 async def on_refresh(query: CallbackQuery, bot: Bot) -> None:
-    await query.answer()
     try:
         poll_id = int((query.data or "").split(":")[2])
     except (IndexError, ValueError):
+        await query.answer()
         return
 
-    if query.message and getattr(query.message, "ephemeral_message_id", None):
-        await _replace_panel(
-            query,
-            bot,
-            "✅ Карточка опроса обновлена.",
-        )
-
+    await query.answer("🔄 Обновляю карточку…")
     await service.refresh_published_card(bot, poll_id, force=True)
+
+
+@router.callback_query(F.data.startswith("poll:text:"))
+async def on_show_text_version(query: CallbackQuery, bot: Bot) -> None:
+    try:
+        poll_id = int((query.data or "").split(":")[2])
+    except (IndexError, ValueError):
+        await query.answer()
+        return
+
+    view = db.get_view(poll_id)
+    if view is None:
+        await query.answer("⚠️ Опрос не найден.")
+        return
+    if view.poll.card_mode == CARD_TEXT:
+        await query.answer("ℹ️ Текстовая версия уже отображается.")
+        return
+
+    ok = await service.set_caption_full(bot, poll_id, full=True)
+    await query.answer(
+        "✅ Показана текстовая версия."
+        if ok
+        else "⚠️ Не удалось показать текстовую версию."
+    )
+
+
+@router.callback_query(F.data.startswith("poll:short:"))
+async def on_show_short_caption(query: CallbackQuery, bot: Bot) -> None:
+    try:
+        poll_id = int((query.data or "").split(":")[2])
+    except (IndexError, ValueError):
+        await query.answer()
+        return
+
+    view = db.get_view(poll_id)
+    if view is None:
+        await query.answer("⚠️ Опрос не найден.")
+        return
+    if view.poll.card_mode == CARD_TEXT:
+        await query.answer("ℹ️ Показана текстовая версия опроса.")
+        return
+
+    ok = await service.set_caption_full(bot, poll_id, full=False)
+    await query.answer(
+        "✅ Показана короткая подпись."
+        if ok
+        else "⚠️ Не удалось обновить подпись."
+    )
 
 
 # ── Мои опросы: управление ─────────────────────────────────

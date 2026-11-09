@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _TZ = zoneinfo.ZoneInfo(config.TIMEZONE)
 
 WIDTH = 1080
+MAX_HEIGHT = 8000
 PAD = 40
 INNER = 24
 RADIUS = 26
@@ -277,11 +278,12 @@ def _format_expiry(poll) -> str:
 
 
 def _header_status(poll_view: PollView) -> tuple[str, tuple[int, int, int]]:
-    if poll_view.poll.status != STATUS_ACTIVE:
-        return "Опрос закрыт", RED
+    free = poll_view.available_options
+    taken = poll_view.total_options - free
+    active = poll_view.poll.status == STATUS_ACTIVE
     return (
-        f"Доступно: {poll_view.available_options} из {poll_view.total_options}",
-        GREEN if poll_view.available_options else RED,
+        f"Свободно: {free} · Занято: {taken}",
+        GREEN if free and active else RED,
     )
 
 
@@ -350,6 +352,10 @@ def render_poll_card(
     blocks_height = sum(block["height"] for block in blocks) + max(0, len(blocks) - 1) * 16
     footer_height = 70
     height = PAD + header_height + notice_height + blocks_height + footer_height + PAD
+    if height > MAX_HEIGHT:
+        raise ValueError(
+            f"Карточка слишком высокая ({height}px) — нужен текстовый режим"
+        )
 
     image = Image.new("RGBA", (WIDTH, height), BG_BOTTOM)
     background = Image.new("RGBA", (WIDTH, height))
@@ -514,7 +520,7 @@ def render_poll_card(
             names_text = _ellipsize(names_text, meta_font, max(60, names_max))
             nb2 = meta_font.getbbox(names_text)
             names_y = avatar_y + (AVATAR_SIZE - (nb2[3] - nb2[1])) / 2 - nb2[1]
-            draw.text((avatar_x + 18, names_y), names_text, font=meta_font, fill=MUTED)
+            draw.text((avatar_x + 26, names_y), names_text, font=meta_font, fill=MUTED)
 
         y += block_height + (16 if block_index < len(blocks) - 1 else 0)
 

@@ -95,7 +95,35 @@ def _poll_footer(view: PollView) -> list[str]:
             lines.append("⌛ Срок действия опроса истёк.")
         else:
             lines.append("🔒 Опрос закрыт организатором.")
+    lines.append(f"🕒 Обновлено: {datetime.datetime.now(tz=_TZ):%d.%m.%Y %H:%M}")
     return lines
+
+
+def card_caption(view: PollView) -> str:
+    """Короткая подпись под графической карточкой."""
+    poll = view.poll
+    free = view.available_options
+    taken = view.total_options - free
+    parts = [
+        f"🗳 <b>{esc(poll.title)}</b>",
+        "",
+        f"🟢 Свободно: <b>{free}</b> · 🔴 Занято: <b>{taken}</b>",
+        "",
+    ]
+    if poll.status == STATUS_EXPIRED:
+        parts.append("⌛ Срок действия опроса истёк.")
+    elif poll.status != STATUS_ACTIVE:
+        parts.append("🔒 Опрос закрыт организатором.")
+    if free:
+        parts.append(
+            "Нажмите на свободный вариант ниже, чтобы забронировать. "
+            "Для смены выбора нажмите другой свободный вариант."
+        )
+    else:
+        parts.append(
+            "Свободных вариантов нет. Нажмите «Обновить», если кто-то отменит выбор."
+        )
+    return "\n".join(parts)
 
 
 def poll_caption(view: PollView, *, limit: int = CAPTION_LIMIT) -> str:
@@ -141,7 +169,12 @@ def poll_text(view: PollView, *, limit: int = TEXT_LIMIT) -> str:
     return poll_caption(view, limit=limit)
 
 
-def poll_keyboard(view: PollView) -> InlineKeyboardMarkup:
+def poll_keyboard(
+    view: PollView,
+    *,
+    text_version: bool = False,
+    text_mode: bool = False,
+) -> InlineKeyboardMarkup:
     poll = view.poll
     rows: list[list[InlineKeyboardButton]] = []
     for index, item in enumerate(view.options, 1):
@@ -155,30 +188,13 @@ def poll_keyboard(view: PollView) -> InlineKeyboardMarkup:
             btn("❌ Отменить выбор", f"poll:cancel:{poll.id}"),
         ]
     )
-    rows.append(
-        [
-            btn("🔄 Обновить", f"poll:refresh:{poll.id}"),
-            btn("📋 Мои опросы", "poll:mine"),
-        ]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def picker_keyboard(view: PollView) -> InlineKeyboardMarkup:
-    poll = view.poll
-    rows: list[list[InlineKeyboardButton]] = []
-    for index, item in enumerate(view.options, 1):
-        mark = "🔒" if item.is_full else "✅"
-        label = _clip(f"{index}. {item.option.title}")
-        rows.append(
-            [
-                btn(
-                    f"{label} {mark}",
-                    f"poll:picksel:{poll.id}:{item.option.id}:{poll.revision}",
-                )
-            ]
-        )
-    rows.append([btn("⬅️ К карточке", f"poll:refresh:{poll.id}")])
+    rows.append([btn("🔄 Обновить", f"poll:refresh:{poll.id}")])
+    if not text_mode:
+        if text_version:
+            rows.append([btn("🖼 Короткая подпись", f"poll:short:{poll.id}")])
+        else:
+            rows.append([btn("📄 Показать текстовую версию", f"poll:text:{poll.id}")])
+    rows.append([btn("📋 Мои опросы", "poll:mine")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

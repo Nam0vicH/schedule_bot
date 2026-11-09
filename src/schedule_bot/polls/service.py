@@ -17,6 +17,8 @@ from schedule_bot.polls import avatars as avatars_module
 from schedule_bot.polls import card as card_module
 from schedule_bot.polls import db, ui
 from schedule_bot.polls.models import (
+    CARD_PHOTO,
+    CARD_TEXT,
     STATUS_ACTIVE,
     Booking,
     ChatTarget,
@@ -33,6 +35,7 @@ _TZ = zoneinfo.ZoneInfo(config.TIMEZONE)
 _card_locks: dict[int, asyncio.Lock] = {}
 _refresh_jobs: dict[int, asyncio.Task] = {}
 _refresh_dirty: set[int] = set()
+_full_caption_polls: set[int] = set()
 _bot_username: str | None = None
 
 
@@ -137,7 +140,7 @@ async def build_card_image(
 async def render_draft_preview(bot: Bot, draft: dict) -> tuple[bytes | None, str]:
     view = _build_preview_view(draft)
     image = await build_card_image(bot, view)
-    caption = "👁 <b>Предпросмотр</b>\n\n" + ui.poll_caption(view, limit=960)
+    caption = "👁 <b>Предпросмотр</b>\n\n" + ui.card_caption(view)
     return image, caption
 
 
@@ -145,13 +148,12 @@ async def _send_text_card(
     bot: Bot,
     chat_id: int,
     view: PollView,
-    keyboard: InlineKeyboardMarkup,
 ) -> Message:
     return await bot.send_message(
         chat_id=chat_id,
         text=ui.poll_text(view),
         parse_mode=ParseMode.HTML,
-        reply_markup=keyboard,
+        reply_markup=ui.poll_keyboard(view, text_mode=True),
     )
 
 
@@ -175,7 +177,7 @@ async def _send_new_card(
             return message, "photo"
         except TelegramBadRequest as exc:
             logger.warning("Фото опроса не отправилось, публикую текстом: %s", exc)
-    message = await _send_text_card(bot, chat_id, view, keyboard)
+    message = await _send_text_card(bot, chat_id, view)
     return message, "text"
 
 
@@ -189,7 +191,7 @@ async def publish_poll(bot: Bot, poll_id: int) -> tuple[bool, str]:
             return False, "Не выбран чат для публикации."
 
         image = await build_card_image(bot, view)
-        caption = ui.poll_caption(view)
+        caption = ui.card_caption(view)
         keyboard = ui.poll_keyboard(view)
 
         try:
@@ -207,6 +209,7 @@ async def publish_poll(bot: Bot, poll_id: int) -> tuple[bool, str]:
 
         db.set_published_message(poll_id, view.poll.chat_id, message.message_id, mode)
         db.mark_rendered(poll_id, view.poll.revision)
+        _full_caption_polls.discard(poll_id)
         return True, ""
 
 
@@ -218,6 +221,15 @@ def _is_missing_message_error(exc: TelegramBadRequest) -> bool:
             "message to edit not found",
             "message can't be edited",
             "message_id_invalid",
+        )
+    )
+
+
+def _is_text_message_error(exc: TelegramBadRequest) -> bool:
+    text = (exc.message or "").lower()
+    return any(
+        marker in text
+        for marker in (
             "there is no photo in the message",
             "message is not a photo",
         )
@@ -230,7 +242,7 @@ async def refresh_published_card(
     *,
     force: bool = False,
 ) -> bool:
-    """Обновить опубликованную карточку (фото + подпись + кнопки)."""
+    """Обновить единственное сообщение опроса на месте."""
     async with _lock(poll_id):
         poll = db.get_poll(poll_id)
         if poll is None or not poll.chat_id or not poll.message_id:
@@ -242,14 +254,36 @@ async def refresh_published_card(
         if view is None:
             return False
 
-        image = await build_card_image(bot, view)
-        caption = ui.poll_caption(view)
-        keyboard = ui.poll_keyboard(view)
+        image = (
+            None
+            if poll.card_mode == CARD_TEXT
+            else await build_card_image(bot, view)
+        )
+        text_version = poll_id in _full_caption_polls
+        caption = (
+            ui.poll_caption(view, limit=1000)
+            if text_version
+            else ui.card_caption(view)
+        )
+        keyboard = ui.poll_keyboard(view, text_version=text_version)
         chat_id = poll.chat_id
         message_id = poll.message_id
+        mode = poll.card_mode
+
+        async def _switch_to_text() -> None:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=ui.poll_text(view),
+                parse_mode=ParseMode.HTML,
+                reply_markup=ui.poll_keyboard(view, text_mode=True),
+            )
 
         try:
-            if image:
+            if poll.card_mode == CARD_TEXT:
+                await _switch_to_text()
+                mode = CARD_TEXT
+            elif image:
                 try:
                     await bot.edit_message_media(
                         chat_id=chat_id,
@@ -261,22 +295,16 @@ async def refresh_published_card(
                         ),
                         reply_markup=keyboard,
                     )
-                    mode = "photo"
+                    mode = CARD_PHOTO
                 except TelegramBadRequest as exc:
-                    if _is_missing_message_error(exc):
-                        raise
                     if "message is not modified" in (exc.message or "").lower():
                         db.mark_rendered(poll_id, view.poll.revision)
                         return True
-                    await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        text=ui.poll_text(view),
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=keyboard,
-                    )
-                    mode = "text"
-            elif poll.card_mode == "photo":
+                    if _is_missing_message_error(exc):
+                        raise
+                    await _switch_to_text()
+                    mode = CARD_TEXT
+            elif poll.card_mode == CARD_PHOTO:
                 try:
                     await bot.edit_message_caption(
                         chat_id=chat_id,
@@ -285,39 +313,39 @@ async def refresh_published_card(
                         parse_mode=ParseMode.HTML,
                         reply_markup=keyboard,
                     )
-                    mode = "photo"
+                    mode = CARD_PHOTO
                 except TelegramBadRequest as exc:
                     if "message is not modified" in (exc.message or "").lower():
                         db.mark_rendered(poll_id, view.poll.revision)
                         return True
-                    raise
+                    if _is_missing_message_error(exc):
+                        raise
+                    if _is_text_message_error(exc):
+                        await _switch_to_text()
+                        mode = CARD_TEXT
+                    else:
+                        raise
             else:
-                try:
-                    await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        text=ui.poll_text(view),
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=keyboard,
-                    )
-                    mode = "text"
-                except TelegramBadRequest as exc:
-                    if "message is not modified" in (exc.message or "").lower():
-                        db.mark_rendered(poll_id, view.poll.revision)
-                        return True
-                    raise
+                await _switch_to_text()
+                mode = CARD_TEXT
         except TelegramBadRequest as exc:
             if not _is_missing_message_error(exc):
                 logger.warning("Не удалось обновить карточку опроса #%d: %s", poll_id, exc)
                 return False
-            # Сообщение удалено или уже не является фото — публикуем заново.
+            # Сообщение удалено или уже не редактируется — публикуем заново.
             logger.info("Карточка опроса #%d не найдена, публикую заново", poll_id)
+            try:
+                await bot.delete_message(chat_id, message_id)
+            except Exception:
+                pass
             try:
                 message, mode = await _send_new_card(
                     bot, chat_id, view, image, caption, keyboard
                 )
                 db.set_published_message(poll_id, chat_id, message.message_id, mode)
                 db.mark_rendered(poll_id, view.poll.revision)
+                if mode == CARD_TEXT:
+                    _full_caption_polls.discard(poll_id)
                 return True
             except Exception:
                 logger.exception("Не удалось переопубликовать карточку опроса #%d", poll_id)
@@ -332,6 +360,49 @@ async def refresh_published_card(
         db.mark_rendered(poll_id, view.poll.revision)
         if mode != poll.card_mode:
             db.set_published_message(poll_id, chat_id, message_id, mode)
+            if mode == CARD_TEXT:
+                _full_caption_polls.discard(poll_id)
+        return True
+
+
+async def set_caption_full(bot: Bot, poll_id: int, *, full: bool) -> bool:
+    """Переключить подпись карточки: краткая или полная текстовая версия."""
+    async with _lock(poll_id):
+        poll = db.get_poll(poll_id)
+        if poll is None or not poll.chat_id or not poll.message_id:
+            return False
+        view = db.get_view(poll_id)
+        if view is None:
+            return False
+        if poll.card_mode == CARD_TEXT:
+            return False
+
+        caption = (
+            ui.poll_caption(view, limit=1000)
+            if full
+            else ui.card_caption(view)
+        )
+        keyboard = ui.poll_keyboard(view, text_version=full)
+        try:
+            await bot.edit_message_caption(
+                chat_id=poll.chat_id,
+                message_id=poll.message_id,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in (exc.message or "").lower():
+                logger.warning("Не удалось переключить подпись опроса #%d: %s", poll_id, exc)
+                return False
+        except TelegramAPIError as exc:
+            logger.warning("Ошибка Telegram при переключении подписи #%d: %s", poll_id, exc)
+            return False
+
+        if full:
+            _full_caption_polls.add(poll_id)
+        else:
+            _full_caption_polls.discard(poll_id)
         return True
 
 
@@ -362,6 +433,7 @@ def schedule_refresh(bot: Bot, poll_id: int, delay: float = 0.6) -> None:
 
 
 async def delete_published_message(bot: Bot, poll: Poll) -> None:
+    _full_caption_polls.discard(poll.id)
     if not poll.chat_id or not poll.message_id:
         return
     try:
