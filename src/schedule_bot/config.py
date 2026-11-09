@@ -34,6 +34,20 @@ for _part in _raw_admin_ids.replace(",", " ").split():
 CACHE_DB_PATH = _project_root / "schedule_cache.db"
 CACHE_TTL_HOURS = 2  # время жизни кэша в часах
 
+# ── Опросы с бронированием ─────────────────────────────────
+# Опросы хранятся в той же SQLite-базе, что и кэш расписания,
+# в отдельных таблицах с префиксом poll_ (существующие таблицы не меняются).
+POLLS_DB_PATH = CACHE_DB_PATH
+DATA_DIR = _project_root / "data"
+POLL_AVATAR_DIR = DATA_DIR / "avatars"
+try:
+    _poll_avatar_ttl = int(os.getenv("POLL_AVATAR_TTL_HOURS", "24"))
+except ValueError:
+    _poll_avatar_ttl = 24
+POLL_AVATAR_TTL_HOURS = max(1, _poll_avatar_ttl)
+POLL_MAX_OPTIONS = 15
+POLL_DEFAULT_MAX_PARTICIPANTS = 1
+
 
 # ── Валидация ───────────────────────────────────────────────
 def validate() -> None:

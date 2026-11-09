@@ -13,12 +13,14 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     BotCommand,
     BotCommandScopeAllGroupChats,
     BotCommandScopeAllPrivateChats,
     CallbackQuery,
     EphemeralMessageParameters,
+    InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
 )
@@ -30,6 +32,11 @@ from schedule_bot.formatter import (
     get_day_keyboard,
     get_week_keyboard,
 )
+from schedule_bot.polls import db as polls_db
+from schedule_bot.polls import handlers as polls_handlers
+from schedule_bot.polls import service as polls_service
+from schedule_bot.polls.handlers import router as polls_router
+from schedule_bot.polls.tracking import PollChatTrackerMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -108,19 +115,52 @@ async def _clean_group_command(message: Message) -> None:
 
 @router.message(CommandStart())
 @router.message(Command("help"))
-async def cmd_start(message: Message, bot: Bot) -> None:
-    """Обработка /start и /help."""
+async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
+    """Обработка /start и /help (включая deep-link запуск опросов)."""
+    if await polls_handlers.handle_deeplink(message, bot, state):
+        return
+
     text = (
         "/today — расписание на сегодня\n"
         "/tomorrow — расписание на завтра\n"
-        "/week — расписание на текущую неделю"
+        "/week — расписание на текущую неделю\n"
+        "/polls — опросы с бронированием\n"
+        "/newpoll — создать опрос"
     )
+
+    reply_markup: InlineKeyboardMarkup | None = None
+    try:
+        username = await polls_service.get_bot_username(bot)
+    except Exception:
+        username = ""
+
+    if _is_group_chat(message.chat.type) and username:
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➕ Создать опрос",
+                    url=polls_service.deep_link(
+                        username, f"poll_new_{message.chat.id}"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="📋 Мои опросы",
+                    url=polls_service.deep_link(username, "poll_my"),
+                ),
+            ],
+        ])
+    elif not _is_group_chat(message.chat.type):
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Создать опрос", callback_data="poll:new")],
+            [InlineKeyboardButton(text="📋 Мои опросы", callback_data="poll:mine")],
+        ])
 
     await _clean_group_command(message)
     await _send_response(
         bot=bot,
         chat_id=message.chat.id,
         text=text,
+        reply_markup=reply_markup,
         user_id=message.from_user.id if message.from_user else None,
         chat_type=message.chat.type,
     )
@@ -311,12 +351,16 @@ async def _setup_commands(bot: Bot) -> None:
         BotCommand(command="today", description="Расписание на сегодня", is_ephemeral=True),
         BotCommand(command="tomorrow", description="Расписание на завтра", is_ephemeral=True),
         BotCommand(command="week", description="Расписание на неделю", is_ephemeral=True),
+        BotCommand(command="polls", description="Опросы с бронированием", is_ephemeral=True),
+        BotCommand(command="newpoll", description="Создать опрос", is_ephemeral=True),
         BotCommand(command="help", description="Список команд", is_ephemeral=True),
     ]
     private_commands = [
         BotCommand(command="today", description="Расписание на сегодня"),
         BotCommand(command="tomorrow", description="Расписание на завтра"),
         BotCommand(command="week", description="Расписание на неделю"),
+        BotCommand(command="polls", description="Опросы с бронированием"),
+        BotCommand(command="newpoll", description="Создать опрос"),
         BotCommand(command="help", description="Список команд"),
     ]
     try:
@@ -341,6 +385,13 @@ async def start_bot() -> None:
     )
     dp = Dispatcher()
     dp.include_router(router)
+    dp.include_router(polls_router)
+
+    tracker = PollChatTrackerMiddleware()
+    dp.message.middleware(tracker)
+    dp.my_chat_member.middleware(tracker)
+
+    polls_db.connect().close()
 
     # Настройка команд с эфемерным режимом для групп
     await _setup_commands(bot)
@@ -350,9 +401,12 @@ async def start_bot() -> None:
         config.GROUP_NAME,
     )
 
+    expiry_task = asyncio.create_task(polls_service.expiry_watcher(bot))
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
+        expiry_task.cancel()
+        await asyncio.gather(expiry_task, return_exceptions=True)
         await bot.session.close()
 
 

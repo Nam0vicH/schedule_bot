@@ -10,7 +10,7 @@ sudo apt update && sudo apt upgrade -y
 
 # 2. Установка Python и зависимостей
 echo "[2/7] Установка Python..."
-sudo apt install -y python3 python3-venv python3-pip git
+sudo apt install -y python3 python3-venv python3-pip git fonts-dejavu-core
 
 # 3. Установка uv (менеджер пакетов)
 echo "[3/7] Установка uv..."
