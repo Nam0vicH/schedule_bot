@@ -141,8 +141,6 @@ def _ellipsize(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
 
 
 def _participant_label(booking: Booking) -> str:
-    if booking.username:
-        return f"{booking.user_name} (@{booking.username})"
     return booking.user_name
 
 
@@ -526,8 +524,6 @@ def render_poll_card(
 
     footer_y = height - PAD - 24
     draw.line((PAD, footer_y - 18, PAD + content_width, footer_y - 18), fill=BORDER, width=1)
-    footer_left = "Опросы с бронированием"
-    draw.text((PAD, footer_y), footer_left, font=small_font, fill=SUBTLE)
     footer_right = f"Обновлено {now:%d.%m.%Y %H:%M}"
     footer_w = _text_width(small_font, footer_right)
     draw.text((PAD + content_width - footer_w, footer_y), footer_right, font=small_font, fill=SUBTLE)

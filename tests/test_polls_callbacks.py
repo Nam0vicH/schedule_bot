@@ -146,28 +146,6 @@ class PollCallbacksTestCase(unittest.IsolatedAsyncioTestCase):
         refresh.assert_awaited_once_with(self.bot, self.poll_id, force=True)
         self._assert_no_chat_messages()
 
-    async def test_text_version_toggles_caption_only(self) -> None:
-        query = self._query(f"poll:text:{self.poll_id}")
-        with patch.object(
-            handlers.service, "set_caption_full", AsyncMock(return_value=True)
-        ) as toggle:
-            await handlers.on_show_text_version(query, self.bot)
-
-        query.answer.assert_awaited_once_with("✅ Показана текстовая версия.")
-        toggle.assert_awaited_once_with(self.bot, self.poll_id, full=True)
-        self._assert_no_chat_messages()
-
-    async def test_short_caption_toggles_caption_only(self) -> None:
-        query = self._query(f"poll:short:{self.poll_id}")
-        with patch.object(
-            handlers.service, "set_caption_full", AsyncMock(return_value=True)
-        ) as toggle:
-            await handlers.on_show_short_caption(query, self.bot)
-
-        query.answer.assert_awaited_once_with("✅ Показана короткая подпись.")
-        toggle.assert_awaited_once_with(self.bot, self.poll_id, full=False)
-        self._assert_no_chat_messages()
-
     async def test_malformed_callback_is_answered(self) -> None:
         query = self._query("poll:pick:oops")
 

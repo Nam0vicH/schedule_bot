@@ -27,7 +27,7 @@ from aiogram.types import (
 
 from schedule_bot import config
 from schedule_bot.polls import db, service, ui
-from schedule_bot.polls.models import CARD_TEXT, STATUS_ACTIVE, PollView
+from schedule_bot.polls.models import STATUS_ACTIVE, PollView
 from schedule_bot.polls.states import CreatePoll, ManagePoll
 
 logger = logging.getLogger(__name__)
@@ -510,54 +510,6 @@ async def on_refresh(query: CallbackQuery, bot: Bot) -> None:
 
     await query.answer("🔄 Обновляю карточку…")
     await service.refresh_published_card(bot, poll_id, force=True)
-
-
-@router.callback_query(F.data.startswith("poll:text:"))
-async def on_show_text_version(query: CallbackQuery, bot: Bot) -> None:
-    try:
-        poll_id = int((query.data or "").split(":")[2])
-    except (IndexError, ValueError):
-        await query.answer()
-        return
-
-    view = db.get_view(poll_id)
-    if view is None:
-        await query.answer("⚠️ Опрос не найден.")
-        return
-    if view.poll.card_mode == CARD_TEXT:
-        await query.answer("ℹ️ Текстовая версия уже отображается.")
-        return
-
-    ok = await service.set_caption_full(bot, poll_id, full=True)
-    await query.answer(
-        "✅ Показана текстовая версия."
-        if ok
-        else "⚠️ Не удалось показать текстовую версию."
-    )
-
-
-@router.callback_query(F.data.startswith("poll:short:"))
-async def on_show_short_caption(query: CallbackQuery, bot: Bot) -> None:
-    try:
-        poll_id = int((query.data or "").split(":")[2])
-    except (IndexError, ValueError):
-        await query.answer()
-        return
-
-    view = db.get_view(poll_id)
-    if view is None:
-        await query.answer("⚠️ Опрос не найден.")
-        return
-    if view.poll.card_mode == CARD_TEXT:
-        await query.answer("ℹ️ Показана текстовая версия опроса.")
-        return
-
-    ok = await service.set_caption_full(bot, poll_id, full=False)
-    await query.answer(
-        "✅ Показана короткая подпись."
-        if ok
-        else "⚠️ Не удалось обновить подпись."
-    )
 
 
 # ── Мои опросы: управление ─────────────────────────────────
